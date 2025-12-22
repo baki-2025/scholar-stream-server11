@@ -35,6 +35,7 @@ async function run() {
     const db = client.db("scholar_stream_db");
     const usersCollection = db.collection("users");
     const scholarshipsCollection = db.collection("scholarships");
+    const applicationsCollection = db.collection("applications");
     const reviewsCollection = db.collection("reviews");
 
     // ================= USERS ROUTES =================
@@ -140,7 +141,7 @@ app.delete("/scholarships/:id", async (req, res) => {
   }
 });
 
-// APPLICATIONS ROUTES
+//----- APPLICATIONS ROUTES----//
 app.post("/applications", async (req, res) => {
   const application = {
     ...req.body,
@@ -153,6 +154,37 @@ app.post("/applications", async (req, res) => {
   const result = await applicationsCollection.insertOne(application);
   res.send({ success: true, insertedId: result.insertedId });
 });
+
+app.get("/applications", async (req, res) => {
+  const email = req.query.email;
+  const result = await applicationsCollection
+    .find({ applicantEmail: email })
+    .toArray();
+  res.send(result);
+});
+
+app.patch("/applications/pay/:id", async (req, res) => {
+  const id = req.params.id;
+
+  const result = await applicationsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { paymentStatus: "paid" } }
+  );
+
+  res.send(result);
+});
+
+app.delete("/applications/:id", async (req, res) => {
+  const id = req.params.id;
+
+  const result = await applicationsCollection.deleteOne({
+    _id: new ObjectId(id),
+    applicationStatus: "pending",
+  });
+
+  res.send(result);
+});
+
 
 
     // ================= REVIEWS ROUTES =================
