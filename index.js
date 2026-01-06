@@ -618,6 +618,31 @@ async function run() {
       res.send(data);
     });
 
+    app.get("/scholarships/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid ID" });
+    }
+
+    const result = await scholarshipsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!result) {
+      return res.status(404).send({ message: "Scholarship not found" });
+    }
+
+    res.send(result);
+  } catch (error) {
+    console.error("Scholarship fetch error:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
+
+
+
     app.post("/scholarships", async (req, res) => {
       const result = await scholarshipsCollection.insertOne({
         ...req.body,
@@ -644,6 +669,15 @@ async function run() {
     });
 
     /* ================= REVIEWS ================= */
+    app.get("/reviews", async (req, res) => {
+  const { scholarshipId } = req.query;
+
+  const query = scholarshipId ? { scholarshipId } : {};
+  const result = await reviewsCollection.find(query).toArray();
+  res.send(result);
+});
+
+
     app.post("/reviews", async (req, res) => {
       const result = await reviewsCollection.insertOne({
         ...req.body,
