@@ -333,6 +333,31 @@ async function run() {
     res.send({ role: user?.role || "student" });
   });
 
+  app.get("/admin/users", async (req, res) => {
+  const users = await usersCollection.find().toArray();
+  res.send(users);
+});
+
+app.patch("/admin/users/role/:id", async (req, res) => {
+  const { role } = req.body;
+
+  const result = await usersCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    { $set: { role } }
+  );
+
+  res.send(result);
+});
+
+app.delete("/admin/users/:id", async (req, res) => {
+  const result = await usersCollection.deleteOne({
+    _id: new ObjectId(req.params.id),
+  });
+
+  res.send(result);
+});
+
+
   /* ================= SCHOLARSHIPS ================= */
   app.get("/scholarships", async (req, res) => {
     res.send(await scholarshipsCollection.find().toArray());
@@ -414,6 +439,48 @@ app.delete("/admin/scholarships/:id", async (req, res) => {
   }
 });
 
+//admin analytics
+app.get("/admin/analytics", async (req, res) => {
+  const totalUsers = await usersCollection.countDocuments();
+  const totalScholarships = await scholarshipsCollection.countDocuments();
+
+  const paidApps = await applicationsCollection.find({
+    paymentStatus: "paid",
+  }).toArray();
+
+  const totalFees = paidApps.reduce(
+    (sum, app) =>
+      sum +
+      Number(app.applicationFees || 0) +
+      Number(app.serviceCharge || 0),
+    0
+  );
+
+  const categoryData = await applicationsCollection.aggregate([
+    {
+      $group: {
+        _id: "$scholarshipCategory",
+        count: { $sum: 1 },
+      },
+    },
+    {
+      $project: {
+        name: "$_id",
+        value: "$count",
+        _id: 0,
+      },
+    },
+  ]).toArray();
+
+  res.send({
+    totalUsers,
+    totalScholarships,
+    totalFees,
+    chartData: categoryData,
+  });
+});
+
+
 
   /* ================= APPLICATIONS ================= */
 
@@ -482,91 +549,93 @@ app.delete("/admin/scholarships/:id", async (req, res) => {
     res.send(result);
   });
 
+  // Moderator: get all applications
+app.get("/moderator/applications", async (req, res) => {
+  const result = await applicationsCollection.find().toArray();
+  res.send(result);
+});
+
+// Update status
+app.patch("/applications/status/:id", async (req, res) => {
+  const { status } = req.body;
+  const result = await applicationsCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    { $set: { applicationStatus: status } }
+  );
+  res.send(result);
+});
+
+// Add feedback
+app.patch("/applications/feedback/:id", async (req, res) => {
+  const { feedback } = req.body;
+  const result = await applicationsCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    { $set: { feedback } }
+  );
+  res.send(result);
+});
+
+
   /* ================= REVIEWS ================= */
 
-// Add review
 app.post("/reviews", async (req, res) => {
-  try {
-    const {
-      scholarshipId,
-      universityName,
-      userName,
-      userEmail,
-      userImage,
-      ratingPoint,
-      reviewComment,
-    } = req.body;
+  const review = {
+    scholarshipId: new ObjectId(req.body.scholarshipId),
+    universityName: req.body.universityName,
+    userName: req.body.userName,
+    userEmail: req.body.userEmail,
+    userImage: req.body.userImage,
+    ratingPoint: Number(req.body.ratingPoint),
+    reviewComment: req.body.reviewComment,
+    reviewDate: new Date(),
+  };
 
-    if (!scholarshipId || !userEmail || !ratingPoint || !reviewComment) {
-      return res.status(400).send({ message: "Missing required fields" });
-    }
-
-    const result = await reviewsCollection.insertOne({
-      scholarshipId,
-      universityName,
-      userName,
-      userEmail,
-      userImage,
-      ratingPoint,
-      reviewComment,
-      createdAt: new Date(),
-    });
-
-    res.send(result);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Failed to add review" });
-  }
+  const result = await reviewsCollection.insertOne(review);
+  res.send(result);
 });
 
-// Get reviews (optional filter by scholarshipId or userEmail)
 app.get("/reviews", async (req, res) => {
-  try {
-    const query = {};
-    if (req.query.scholarshipId) query.scholarshipId = req.query.scholarshipId;
-    if (req.query.userEmail) query.userEmail = req.query.userEmail;
-
-    const reviews = await reviewsCollection.find(query).toArray();
-    res.send(reviews);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Failed to fetch reviews" });
-  }
+  const result = await reviewsCollection.find().toArray();
+  res.send(result);
 });
 
-// Update review
+app.get("/reviews/scholarship/:id", async (req, res) => {
+  const result = await reviewsCollection
+    .find({ scholarshipId: new ObjectId(req.params.id) })
+    .toArray();
+  res.send(result);
+});
+
+app.get("/reviews/user/:email", async (req, res) => {
+  const result = await reviewsCollection
+    .find({ userEmail: req.params.email })
+    .toArray();
+  res.send(result);
+});
+
+
 app.patch("/reviews/:id", async (req, res) => {
-  try {
-    const { ratingPoint, reviewComment } = req.body;
+  const { ratingPoint, reviewComment } = req.body;
 
-    if (!ratingPoint || !reviewComment) {
-      return res.status(400).send({ message: "Missing fields to update" });
+  const result = await reviewsCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    {
+      $set: {
+        ratingPoint,
+        reviewComment,
+        reviewDate: new Date(),
+      },
     }
+  );
 
-    const result = await reviewsCollection.updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { ratingPoint, reviewComment, updatedAt: new Date() } }
-    );
-
-    res.send(result);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Failed to update review" });
-  }
+  res.send(result);
 });
 
-// Delete review
 app.delete("/reviews/:id", async (req, res) => {
-  try {
-    const result = await reviewsCollection.deleteOne({
-      _id: new ObjectId(req.params.id),
-    });
-
-    res.send(result);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Failed to delete review" });
-  }
+  const result = await reviewsCollection.deleteOne({
+    _id: new ObjectId(req.params.id),
+  });
+  res.send(result);
 });
 
 
