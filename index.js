@@ -5,6 +5,9 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
+const jwt = require("jsonwebtoken"); 
+const crypto = require('crypto'); 
+//console.log(crypto.randomBytes(64).toString('hex'));
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -20,19 +23,24 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-/* ================= VERIFY TOKEN ================= */
-const verifyToken = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).send({ message: "Unauthorized" });
 
-    const token = authHeader.split(" ")[1];
-    const decoded = await admin.auth().verifyIdToken(token);
-    req.user = decoded;
-    next();
-  } catch {
-    res.status(401).send({ message: "Unauthorized" });
+const verifyJWT = (req, res, next) => {
+  const authorization = req.headers.authorization;
+
+  if (!authorization) {
+    return res.status(401).send({ message: "Unauthorized access" });
   }
+
+  const token = authorization.split(" ")[1];
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).send({ message: "Invalid token" });
+    }
+
+    req.decoded = decoded;
+    next();
+  });
 };
 
 /* ================= MONGODB ================= */
@@ -51,13 +59,48 @@ async function run() {
   console.log("MongoDB Connected");
 
   const db = client.db("scholar_stream_db");
-
   const usersCollection = db.collection("users");
+  
+const verifyAdmin = async (req, res, next) => {
+    const email = req.decoded.email;
+    const user = await usersCollection.findOne({ email });
+
+    if (user?.role !== "admin") {
+      return res.status(403).send({ message: "Forbidden access" });
+    }
+    next();
+  };
+
+  const verifyModerator = async (req, res, next) => {
+    const email = req.decoded.email;
+    const user = await usersCollection.findOne({ email });
+
+    if (user?.role !== "moderator" && user?.role !== "admin") {
+      return res.status(403).send({ message: "Forbidden access" });
+    }
+    next();
+  };
+
   const scholarshipsCollection = db.collection("scholarships");
   const applicationsCollection = db.collection("applications");
   const reviewsCollection = db.collection("reviews");
 
   /* ================= USERS ================= */
+ app.post("/jwt", async (req, res) => {
+  const user = req.body; // { email }
+
+  if (!user?.email) {
+    return res.status(400).send({ message: "Email required" });
+  }
+
+  const token = jwt.sign(user, process.env.JWT_SECRET, {
+    expiresIn: "1h",
+  });
+
+  res.send({ token });
+});
+
+
   app.post("/users", async (req, res) => {
     const { name, email, photoURL } = req.body;
 
@@ -80,52 +123,52 @@ async function run() {
     res.send({ role: user?.role || "student" });
   });
 
-  app.get("/admin/users", async (req, res) => {
-  const users = await usersCollection.find().toArray();
-  res.send(users);
-});
-
-app.patch("/admin/users/role/:id", async (req, res) => {
-  const { role } = req.body;
-
-  const result = await usersCollection.updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { role } }
-  );
-
-  res.send(result);
-});
-
-app.delete("/admin/users/:id", async (req, res) => {
-  const result = await usersCollection.deleteOne({
-    _id: new ObjectId(req.params.id),
+  app.get("/admin/users",verifyJWT, verifyAdmin, async (req, res) => {
+    const users = await usersCollection.find().toArray();
+    res.send(users);
   });
 
-  res.send(result);
-});
+  app.patch("/admin/users/role/:id",verifyJWT, verifyAdmin, async (req, res) => {
+    const { role } = req.body;
 
-/* ================= SCHOLARSHIPS ================= */
-  app.get("/scholarships", async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 6;
+    const result = await usersCollection.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { role } }
+    );
 
-  const skip = (page - 1) * limit;
-
-  const total = await scholarshipsCollection.countDocuments();
-
-  const scholarships = await scholarshipsCollection
-    .find()
-    .skip(skip)
-    .limit(limit)
-    .toArray();
-
-  res.send({
-    total,
-    page,
-    totalPages: Math.ceil(total / limit),
-    scholarships,
+    res.send(result);
   });
-});
+
+  app.delete("/admin/users/:id",verifyJWT, verifyAdmin, async (req, res) => {
+    const result = await usersCollection.deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+
+    res.send(result);
+  });
+
+  /* ================= SCHOLARSHIPS ================= */
+  app.get("/scholarships",async (req, res) => {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 6;
+
+    const skip = (page - 1) * limit;
+
+    const total = await scholarshipsCollection.countDocuments();
+
+    const scholarships = await scholarshipsCollection
+      .find()
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    res.send({
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+      scholarships,
+    });
+  });
 
 
   app.get("/scholarships/:id", async (req, res) => {
@@ -138,18 +181,18 @@ app.delete("/admin/users/:id", async (req, res) => {
 
     res.send(scholarship);
   });
-     //admin only
-  app.get("/admin/scholarships", async (req, res) => {
-  try {
-    const scholarships = await scholarshipsCollection.find().toArray();
-    res.send(scholarships);
-  } catch (err) {
-    res.status(500).send({ message: "Failed to load scholarships" });
-  }
-});
+  //admin only
+  app.get("/admin/scholarships",verifyJWT, verifyAdmin, async (req, res) => {
+    try {
+      const scholarships = await scholarshipsCollection.find().toArray();
+      res.send(scholarships);
+    } catch (err) {
+      res.status(500).send({ message: "Failed to load scholarships" });
+    }
+  });
 
 
-  app.post("/scholarships", async (req, res) => {
+  app.post("/scholarships",verifyJWT, verifyAdmin, async (req, res) => {
     const result = await scholarshipsCollection.insertOne({
       ...req.body,
       createdAt: new Date(),
@@ -158,92 +201,92 @@ app.delete("/admin/users/:id", async (req, res) => {
   });
 
   /* ================= UPDATE SCHOLARSHIP ================= */
-app.patch("/admin/scholarships/:id", async (req, res) => {
-  const { id } = req.params;
+  app.patch("/admin/scholarships/:id",verifyJWT, verifyAdmin, async (req, res) => {
+    const { id } = req.params;
 
-  if (!ObjectId.isValid(id)) {
-    return res.status(400).send({ message: "Invalid ID" });
-  }
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid ID" });
+    }
 
-  try {
-    const result = await scholarshipsCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: req.body }
+    try {
+      const result = await scholarshipsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: req.body }
+      );
+
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: "Scholarship not found" });
+      }
+
+      res.send({ message: "Scholarship updated successfully" });
+    } catch (err) {
+      res.status(500).send({ message: "Failed to update scholarship" });
+    }
+  });
+
+  /* ================= DELETE SCHOLARSHIP ================= */
+  app.delete("/admin/scholarships/:id",verifyJWT, verifyAdmin, async (req, res) => {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid ID" });
+    }
+
+    try {
+      const result = await scholarshipsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      if (result.deletedCount === 0) {
+        return res.status(404).send({ message: "Scholarship not found" });
+      }
+
+      res.send({ message: "Scholarship deleted successfully" });
+    } catch (err) {
+      res.status(500).send({ message: "Failed to delete scholarship" });
+    }
+  });
+
+  //admin analytics
+  app.get("/admin/analytics",verifyJWT, verifyAdmin, async (req, res) => {
+    const totalUsers = await usersCollection.countDocuments();
+    const totalScholarships = await scholarshipsCollection.countDocuments();
+
+    const paidApps = await applicationsCollection.find({
+      paymentStatus: "paid",
+    }).toArray();
+
+    const totalFees = paidApps.reduce(
+      (sum, app) =>
+        sum +
+        Number(app.applicationFees || 0) +
+        Number(app.serviceCharge || 0),
+      0
     );
 
-    if (result.matchedCount === 0) {
-      return res.status(404).send({ message: "Scholarship not found" });
-    }
+    const categoryData = await applicationsCollection.aggregate([
+      {
+        $group: {
+          _id: "$scholarshipCategory",
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          name: "$_id",
+          value: "$count",
+          _id: 0,
+        },
+      },
+    ]).toArray();
 
-    res.send({ message: "Scholarship updated successfully" });
-  } catch (err) {
-    res.status(500).send({ message: "Failed to update scholarship" });
-  }
-});
-
-/* ================= DELETE SCHOLARSHIP ================= */
-app.delete("/admin/scholarships/:id", async (req, res) => {
-  const { id } = req.params;
-
-  if (!ObjectId.isValid(id)) {
-    return res.status(400).send({ message: "Invalid ID" });
-  }
-
-  try {
-    const result = await scholarshipsCollection.deleteOne({
-      _id: new ObjectId(id),
+    res.send({
+      totalUsers,
+      totalScholarships,
+      totalFees,
+      chartData: categoryData,
     });
-
-    if (result.deletedCount === 0) {
-      return res.status(404).send({ message: "Scholarship not found" });
-    }
-
-    res.send({ message: "Scholarship deleted successfully" });
-  } catch (err) {
-    res.status(500).send({ message: "Failed to delete scholarship" });
-  }
-});
-
-//admin analytics
-app.get("/admin/analytics", async (req, res) => {
-  const totalUsers = await usersCollection.countDocuments();
-  const totalScholarships = await scholarshipsCollection.countDocuments();
-
-  const paidApps = await applicationsCollection.find({
-    paymentStatus: "paid",
-  }).toArray();
-
-  const totalFees = paidApps.reduce(
-    (sum, app) =>
-      sum +
-      Number(app.applicationFees || 0) +
-      Number(app.serviceCharge || 0),
-    0
-  );
-
-  const categoryData = await applicationsCollection.aggregate([
-    {
-      $group: {
-        _id: "$scholarshipCategory",
-        count: { $sum: 1 },
-      },
-    },
-    {
-      $project: {
-        name: "$_id",
-        value: "$count",
-        _id: 0,
-      },
-    },
-  ]).toArray();
-
-  res.send({
-    totalUsers,
-    totalScholarships,
-    totalFees,
-    chartData: categoryData,
   });
-});
 
 
 
@@ -251,160 +294,95 @@ app.get("/admin/analytics", async (req, res) => {
 
   // Create Application
   app.post("/applications", async (req, res) => {
-  try {
-    const {
-      applicantEmail,
-      scholarshipId,
-      universityName,
-      scholarshipCategory,
-      degree,
-      applicationFees,
-      serviceCharge
-    } = req.body;
+    try {
+      const {
+        applicantEmail,
+        scholarshipId,
+        universityName,
+        subjectCategory,
+        degree,
+        applicationFees,
+        serviceCharge
+      } = req.body;
 
-    if (!applicantEmail || !scholarshipId) {
-      return res.status(400).send({ message: "Missing required fields" });
+      if (!applicantEmail || !scholarshipId) {
+        return res.status(400).send({ message: "Missing required fields" });
+      }
+
+      const result = await applicationsCollection.insertOne({
+        applicantEmail,
+        scholarshipId,
+        universityName,
+        subjectCategory,
+        degree,
+        applicationFees,
+        serviceCharge,
+        applicationStatus: "pending",
+        paymentStatus: "unpaid",
+        createdAt: new Date(),
+      });
+
+      res.send(result);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send({ message: "Failed to create application" });
+    }
+  });
+
+
+  app.get("/applications",verifyJWT, async (req, res) => {
+    const email = req.decoded.email;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 5;
+
+    const skip = (page - 1) * limit;
+
+    const query = { applicantEmail: email };
+
+    const total = await applicationsCollection.countDocuments(query);
+
+    const applications = await applicationsCollection
+      .find(query)
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    res.send({
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+      applications,
+    });
+  });
+
+  // Delete application
+  app.delete("/applications/:id",verifyJWT,async (req, res) => {
+    const { id } = req.params;
+    const email = req.query.email;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid ID" });
     }
 
-    const result = await applicationsCollection.insertOne({
-      applicantEmail,
-      scholarshipId,
-      universityName,
-      scholarshipCategory,
-      degree,
-      applicationFees,
-      serviceCharge,
-      applicationStatus: "pending",
-      paymentStatus: "unpaid",
-      createdAt: new Date(),
-    });
-
-    res.send(result);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Failed to create application" });
-  }
-});
-
-
-  app.get("/applications", async (req, res) => {
-  const email = req.query.email;
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 5;
-
-  const skip = (page - 1) * limit;
-
-  const query = { applicantEmail: email };
-
-  const total = await applicationsCollection.countDocuments(query);
-
-  const applications = await applicationsCollection
-    .find(query)
-    .skip(skip)
-    .limit(limit)
-    .toArray();
-
-  res.send({
-    total,
-    page,
-    totalPages: Math.ceil(total / limit),
-    applications,
-  });
-});
-
-// Delete application
-  app.delete("/applications/:id", async (req, res) => {
     const result = await applicationsCollection.deleteOne({
-      _id: new ObjectId(req.params.id),
+      _id: new ObjectId(id),
+      applicantEmail: email, // ✅ ownership check
     });
+
     res.send(result);
   });
 
-  // Edit application
-  app.patch("/applications/:id", async (req, res) => {
-    const { degree, subjectCategory } = req.body;
-    const result = await applicationsCollection.updateOne(
-      { _id: new ObjectId(req.params.id) },
-      { $set: { degree, subjectCategory, updatedAt: new Date() } }
-    );
-    res.send(result);
-  });
+  app.patch("/applications/:id", verifyJWT, async (req, res) => {
+  const email = req.decoded.email;
+  const { degree, subjectCategory } = req.body;
 
-  // Moderator: get all applications
-app.get("/moderator/applications", async (req, res) => {
-  const result = await applicationsCollection.find().toArray();
-  res.send(result);
-});
-
-// Update status
-app.patch("/applications/status/:id", async (req, res) => {
-  const { status } = req.body;
   const result = await applicationsCollection.updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { applicationStatus: status } }
-  );
-  res.send(result);
-});
-
-// Add feedback
-app.patch("/applications/feedback/:id", async (req, res) => {
-  const { feedback } = req.body;
-  const result = await applicationsCollection.updateOne(
-    { _id: new ObjectId(req.params.id) },
-    { $set: { feedback } }
-  );
-  res.send(result);
-});
-
-
-  /* ================= REVIEWS ================= */
-
-app.post("/reviews", async (req, res) => {
-  const review = {
-    scholarshipId: new ObjectId(req.body.scholarshipId),
-    universityName: req.body.universityName,
-    userName: req.body.userName,
-    userEmail: req.body.userEmail,
-    userImage: req.body.userImage,
-    ratingPoint: Number(req.body.ratingPoint),
-    reviewComment: req.body.reviewComment,
-    reviewDate: new Date(),
-  };
-
-  const result = await reviewsCollection.insertOne(review);
-  res.send(result);
-});
-
-app.get("/reviews", async (req, res) => {
-  const result = await reviewsCollection.find().toArray();
-  res.send(result);
-});
-
-app.get("/reviews/scholarship/:id", async (req, res) => {
-  const result = await reviewsCollection
-    .find({ scholarshipId: new ObjectId(req.params.id) })
-    .toArray();
-  res.send(result);
-});
-
-app.get("/reviews/user/:email", async (req, res) => {
-  const result = await reviewsCollection
-    .find({ userEmail: req.params.email })
-    .toArray();
-  res.send(result);
-});
-
-
-app.patch("/reviews/:id", async (req, res) => {
-  const { ratingPoint, reviewComment } = req.body;
-
-  const result = await reviewsCollection.updateOne(
-    { _id: new ObjectId(req.params.id) },
+    { _id: new ObjectId(req.params.id), applicantEmail: email },
     {
       $set: {
-        ratingPoint,
-        reviewComment,
-        reviewDate: new Date(),
+        degree,
+        subjectCategory,
+        updatedAt: new Date(),
       },
     }
   );
@@ -412,12 +390,113 @@ app.patch("/reviews/:id", async (req, res) => {
   res.send(result);
 });
 
-app.delete("/reviews/:id", async (req, res) => {
-  const result = await reviewsCollection.deleteOne({
-    _id: new ObjectId(req.params.id),
+
+  // Moderator: get all applications
+  app.get("/moderator/applications",verifyJWT, verifyModerator, async (req, res) => {
+    const result = await applicationsCollection.find().toArray();
+    res.send(result);
   });
-  res.send(result);
-});
+
+  // Update status
+  app.patch("/applications/status/:id",verifyJWT, verifyModerator, async (req, res) => {
+    const { status } = req.body;
+    const result = await applicationsCollection.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { applicationStatus: status } }
+    );
+    res.send(result);
+  });
+
+  app.get("/applications/by-session/:sessionId", async (req, res) => {
+    try {
+      const application = await applicationsCollection.findOne({
+        stripeSessionId: req.params.sessionId,
+      });
+
+      if (!application) {
+        return res.status(404).send({ message: "Application not found" });
+      }
+
+      res.send(application);
+    } catch (err) {
+      res.status(500).send({ message: "Failed to load application" });
+    }
+  });
+
+
+
+  // Add feedback
+  app.patch("/applications/feedback/:id",verifyJWT, verifyModerator, async (req, res) => {
+    const { feedback } = req.body;
+    const result = await applicationsCollection.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { feedback } }
+    );
+    res.send(result);
+  });
+
+
+  /* ================= REVIEWS ================= */
+
+  app.post("/reviews",verifyJWT, async (req, res) => {
+    const review = {
+      scholarshipId: new ObjectId(req.body.scholarshipId),
+      universityName: req.body.universityName,
+      userName: req.body.userName,
+      userEmail: req.body.userEmail,
+      userImage: req.body.userImage,
+      ratingPoint: Number(req.body.ratingPoint),
+      reviewComment: req.body.reviewComment,
+      reviewDate: new Date(),
+    };
+
+    const result = await reviewsCollection.insertOne(review);
+    res.send(result);
+  });
+
+  app.get("/reviews", async (req, res) => {
+    const result = await reviewsCollection.find().toArray();
+    res.send(result);
+  });
+
+  app.get("/reviews/scholarship/:id", async (req, res) => {
+    const result = await reviewsCollection
+      .find({ scholarshipId: new ObjectId(req.params.id) })
+      .toArray();
+    res.send(result);
+  });
+
+  app.get("/reviews/user/:email", async (req, res) => {
+    const result = await reviewsCollection
+      .find({ userEmail: req.params.email })
+      .toArray();
+    res.send(result);
+  });
+
+
+  app.patch("/reviews/:id", async (req, res) => {
+    const { ratingPoint, reviewComment } = req.body;
+
+    const result = await reviewsCollection.updateOne(
+      { _id: new ObjectId(req.params.id) },
+      {
+        $set: {
+          ratingPoint,
+          reviewComment,
+          reviewDate: new Date(),
+        },
+      }
+    );
+
+    res.send(result);
+  });
+
+  app.delete("/reviews/:id", async (req, res) => {
+    const result = await reviewsCollection.deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+    res.send(result);
+  });
 
 
   /* ================= PAYMENT ================= */
@@ -480,20 +559,34 @@ app.delete("/reviews/:id", async (req, res) => {
       }
 
       const applicationId = session.metadata.applicationId;
-      if (!applicationId) {
-        return res.status(400).send({ message: "Application ID missing" });
-      }
-
-      await applicationsCollection.updateOne(
-        { _id: new ObjectId(applicationId) },
-        { $set: { paymentStatus: "paid", paidAt: new Date() } }
-      );
 
       const application = await applicationsCollection.findOne({
         _id: new ObjectId(applicationId),
       });
 
-      res.send({ application });
+      if (!application) {
+        return res.status(404).send({ message: "Application not found" });
+      }
+
+      if (application.paymentStatus !== "paid") {
+        await applicationsCollection.updateOne(
+          { _id: new ObjectId(applicationId) },
+          {
+            $set: {
+              paymentStatus: "paid",
+              applicationStatus: "processing",
+              paidAt: new Date(),
+            },
+          }
+        );
+      }
+
+      // ✅ RETURN APPLICATION
+      const updatedApplication = await applicationsCollection.findOne({
+        _id: new ObjectId(applicationId),
+      });
+
+      res.send({ application: updatedApplication });
     } catch (err) {
       console.error(err);
       res.status(500).send({ message: "Payment confirmation failed" });
@@ -510,4 +603,5 @@ run().catch(console.error);
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-});
+});    
+
