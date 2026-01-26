@@ -17,7 +17,9 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
 /* ================= FIREBASE ADMIN ================= */
-const serviceAccount = require("./scholar-stream-firebase-admin-key.json");
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -298,6 +300,7 @@ const verifyAdmin = async (req, res, next) => {
       const {
         applicantEmail,
         scholarshipId,
+        scholarshipName, 
         universityName,
         subjectCategory,
         degree,
@@ -312,6 +315,7 @@ const verifyAdmin = async (req, res, next) => {
       const result = await applicationsCollection.insertOne({
         applicantEmail,
         scholarshipId,
+        scholarshipName, 
         universityName,
         subjectCategory,
         degree,
@@ -548,7 +552,7 @@ const verifyAdmin = async (req, res, next) => {
   });
 
   // Confirm Payment
-  app.patch("/applications/confirm/:sessionId", async (req, res) => {
+  app.patch("/applications/confirm/:sessionId",verifyJWT, async (req, res) => {
     try {
       const session = await stripe.checkout.sessions.retrieve(
         req.params.sessionId
