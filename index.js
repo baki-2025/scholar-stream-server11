@@ -88,16 +88,42 @@ const verifyAdmin = async (req, res, next) => {
   const reviewsCollection = db.collection("reviews");
 
   /* ================= USERS ================= */
- app.post("/jwt", async (req, res) => {
-  const user = req.body; // { email }
+  // Public: Get users by role (for Swiper / homepage)
+app.get("/users", async (req, res) => {
+  try {
+    const role = req.query.role;
+    const query = role ? { role } : {};
 
-  if (!user?.email) {
+    const users = await usersCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .limit(3)
+      .toArray();
+
+    res.send(users);
+  } catch (err) {
+    res.status(500).send({ message: "Failed to load users" });
+  }
+});
+
+ app.post("/jwt", async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
     return res.status(400).send({ message: "Email required" });
   }
 
-  const token = jwt.sign(user, process.env.JWT_SECRET, {
-    expiresIn: "1h",
-  });
+  const user = await usersCollection.findOne({ email });
+
+  if (!user) {
+    return res.status(403).send({ message: "User not found" });
+  }
+
+  const token = jwt.sign(
+    { email: user.email },
+    process.env.JWT_SECRET,
+    { expiresIn: "1h" }
+  );
 
   res.send({ token });
 });
